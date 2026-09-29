@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { useRouter } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { startTransition, useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -43,6 +43,16 @@ type RouteResponse = {
 
 export default function RideScreen() {
   const router = useRouter();
+  const {
+    destLat: destLatParam,
+    destLon: destLonParam,
+    destName: destNameParam,
+    activeCode: activeCodeParam,
+  } = useLocalSearchParams<{ destLat?: string; destLon?: string; destName?: string; activeCode?: string }>();
+  const destLat = Array.isArray(destLatParam) ? destLatParam[0] : destLatParam;
+  const destLon = Array.isArray(destLonParam) ? destLonParam[0] : destLonParam;
+  const destName = Array.isArray(destNameParam) ? destNameParam[0] : destNameParam;
+  const activeCode = Array.isArray(activeCodeParam) ? activeCodeParam[0] : activeCodeParam;
   const [location, setLocation] = useState<Region | null>(null);
   const [destination, setDestination] = useState<Coordinate | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -54,6 +64,7 @@ export default function RideScreen() {
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [showCustomInput, setShowCustomInput] = useState(false);
   const [actualFare, setActualFare] = useState('');
+  const [isSubmittingFare, setIsSubmittingFare] = useState(false);
   const mapRef = useRef<MapView | null>(null);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -106,23 +117,60 @@ export default function RideScreen() {
     }
   };
 
-  const submitRealFare = (paidAmount: string | number) => {
+  const submitRealFare = async (paidAmount: string | number) => {
     const numericFare = typeof paidAmount === 'number' ? paidAmount : Number(paidAmount);
-    if (!paidAmount || Number.isNaN(numericFare)) {
+    if (!paidAmount || !Number.isFinite(numericFare) || numericFare < 0) {
       Alert.alert('Invalid Input', 'Please enter a valid number.');
       return;
     }
-    console.log(`Fare logged: Estimated ${fare}, Actual ${numericFare}`);
-    Alert.alert('Thank You!', 'Feedback saved!');
-    stopSafetyTracking();
-    setIsModalVisible(false);
-    setShowCustomInput(false);
-    setActualFare('');
-    setDestination(null);
-    setSearchQuery('');
-    setRouteCoords([]);
-    setDistance(0);
-    setIsSurge(false);
+
+    if (!location || !destination) {
+      Alert.alert('Ride unavailable', 'Your pickup or destination location is missing.');
+      return;
+    }
+
+    const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/$/, '');
+    if (!backendUrl) {
+      Alert.alert('Backend unavailable', 'Set EXPO_PUBLIC_BACKEND_URL to save ride feedback.');
+      return;
+    }
+
+    setIsSubmittingFare(true);
+    try {
+      const response = await fetch(`${backendUrl}/api/rides/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          startLat: location.latitude,
+          startLon: location.longitude,
+          endLat: destination.latitude,
+          endLon: destination.longitude,
+          distanceKm: distance,
+          estimatedFare: fare,
+          actualFarePaid: numericFare,
+        }),
+      });
+      const data: unknown = await response.json();
+      const result = data as { success?: unknown; message?: unknown };
+      if (!response.ok || result.success !== true) {
+        throw new Error(typeof result.message === 'string' ? result.message : 'Could not save ride feedback.');
+      }
+
+      Alert.alert('Thank You!', 'Your ride feedback was saved.');
+      stopSafetyTracking();
+      setIsModalVisible(false);
+      setShowCustomInput(false);
+      setActualFare('');
+      setDestination(null);
+      setSearchQuery('');
+      setRouteCoords([]);
+      setDistance(0);
+      setIsSurge(false);
+    } catch (error) {
+      Alert.alert('Could not save ride', error instanceof Error ? error.message : 'Try again when your connection is available.');
+    } finally {
+      setIsSubmittingFare(false);
+    }
   };
 
   const executeSearch = async (text: string) => {
@@ -148,7 +196,7 @@ export default function RideScreen() {
     searchTimeout.current = setTimeout(() => executeSearch(text), 500);
   };
 
-  const fetchRoute = async (destLat: number, destLon: number) => {
+  const fetchRoute = useCallback(async (destLat: number, destLon: number) => {
     if (!location) return;
     try {
       const response = await fetch(
@@ -170,7 +218,75 @@ export default function RideScreen() {
     } catch (error) {
       console.error(error);
     }
-  };
+  }, [location]);
+
+  const applyFriendDestination = useEffectEvent((latitude: number, longitude: number, name?: string) => {
+    if (destination?.latitude === latitude && destination?.longitude === longitude) return;
+
+    startTransition(() => {
+      setDestination({ latitude, longitude });
+      setSearchQuery(name || "Friend's Location");
+      setSearchResults([]);
+    });
+    void fetchRoute(latitude, longitude);
+  });
+
+  useEffect(() => {
+    if (!location || !destLat || !destLon) return;
+
+    const latitude = Number.parseFloat(destLat);
+    const longitude = Number.parseFloat(destLon);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+
+    // URL params are external navigation input that must synchronize the active destination state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    applyFriendDestination(latitude, longitude, destName);
+  }, [destLat, destLon, destName, location]);
+
+  useEffect(() => {
+    const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/$/, '');
+    if (!activeCode || !location || !backendUrl) return;
+
+    let isActive = true;
+    let isPolling = false;
+    const pollMeetupLocation = async () => {
+      if (isPolling) return;
+      isPolling = true;
+      try {
+        const response = await fetch(`${backendUrl}/api/meetup/${encodeURIComponent(activeCode)}`);
+        if (!response.ok) return;
+
+        const data: unknown = await response.json();
+        const meetup = data as {
+          success?: unknown;
+          latitude?: unknown;
+          longitude?: unknown;
+        };
+        if (
+          !isActive ||
+          meetup.success !== true ||
+          typeof meetup.latitude !== 'number' ||
+          !Number.isFinite(meetup.latitude) ||
+          typeof meetup.longitude !== 'number' ||
+          !Number.isFinite(meetup.longitude)
+        ) {
+          return;
+        }
+
+        applyFriendDestination(meetup.latitude, meetup.longitude);
+      } catch (error) {
+        if (isActive) console.error('Could not refresh Meetup Code location', error);
+      } finally {
+        isPolling = false;
+      }
+    };
+
+    const interval = setInterval(() => void pollMeetupLocation(), 5000);
+    return () => {
+      isActive = false;
+      clearInterval(interval);
+    };
+  }, [activeCode, location]);
 
   const handlePlaceSelect = (item: SearchFeature) => {
     Keyboard.dismiss();
@@ -270,10 +386,10 @@ export default function RideScreen() {
             {!showCustomInput ? (
               <>
                 <Text style={styles.modalText}>Did you pay the estimated fare of Tk {fare}?</Text>
-                <TouchableOpacity style={styles.modalButtonYes} onPress={() => submitRealFare(fare)}>
+                <TouchableOpacity style={styles.modalButtonYes} onPress={() => void submitRealFare(fare)} disabled={isSubmittingFare}>
                   <Text style={styles.modalButtonYesText}>Yes, I paid Tk {fare}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.modalButtonNo} onPress={() => setShowCustomInput(true)}>
+                <TouchableOpacity style={styles.modalButtonNo} onPress={() => setShowCustomInput(true)} disabled={isSubmittingFare}>
                   <Text style={styles.modalButtonNoText}>No, I paid a different amount</Text>
                 </TouchableOpacity>
               </>
@@ -288,10 +404,10 @@ export default function RideScreen() {
                   onChangeText={setActualFare}
                   autoFocus
                 />
-                <TouchableOpacity style={styles.modalButtonYes} onPress={() => submitRealFare(actualFare)}>
-                  <Text style={styles.modalButtonYesText}>Submit Real Fare</Text>
+                <TouchableOpacity style={styles.modalButtonYes} onPress={() => void submitRealFare(actualFare)} disabled={isSubmittingFare}>
+                  <Text style={styles.modalButtonYesText}>{isSubmittingFare ? 'Saving...' : 'Submit Real Fare'}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.modalButtonNo} onPress={() => { setShowCustomInput(false); setActualFare(''); }}>
+                <TouchableOpacity style={styles.modalButtonNo} onPress={() => { setShowCustomInput(false); setActualFare(''); }} disabled={isSubmittingFare}>
                   <Text style={styles.modalButtonNoText}>Go Back</Text>
                 </TouchableOpacity>
               </>

@@ -10,7 +10,7 @@ function createSafetyMessage(coordinate: SafetyCoordinate | null) {
 }
 
 export default function SosScreen() {
-  const [contacts, setContacts] = useState(['', '', '', '', '']);
+  const [contacts, setContacts] = useState(['', '', '']);
   const [coordinate, setCoordinate] = useState(getSafetyCoordinate());
 
   useEffect(() => {
@@ -29,7 +29,7 @@ export default function SosScreen() {
     try {
       await saveSosContacts(contacts);
       Keyboard.dismiss();
-      Alert.alert('Saved', 'Your five emergency contacts are ready.');
+      Alert.alert('Saved', 'Your three emergency contacts are ready.');
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Could not save emergency contacts.');
@@ -68,7 +68,7 @@ export default function SosScreen() {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Emergency SOS</Text>
-      <Text style={styles.subtitle}>Save up to five trusted contacts for a quick safety message during your ride.</Text>
+      <Text style={styles.subtitle}>Save up to three trusted contacts for a quick safety message during your ride.</Text>
 
       <View style={styles.form}>
         {contacts.map((contact, index) => (
