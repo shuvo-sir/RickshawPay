@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useEffectEvent, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { getOrCreateUserId } from '../../lib/userId';
 
 type Ride = {
   _id?: string;
@@ -49,7 +50,8 @@ export default function HistoryScreen() {
     else setIsLoading(true);
     setErrorMessage(null);
     try {
-      const response = await fetch(`${backendUrl}/api/rides/history`);
+      const userId = await getOrCreateUserId();
+      const response = await fetch(`${backendUrl}/api/rides/history?userId=${encodeURIComponent(userId)}`);
       const data: HistoryResponse = await response.json();
       if (!response.ok || data.success !== true || !Array.isArray(data.rides)) {
         throw new Error(typeof data.message === 'string' ? data.message : 'Could not load ride history.');

@@ -8,6 +8,7 @@ import {
   Dimensions,
   FlatList,
   Keyboard,
+  Linking,
   Modal,
   Share,
   StyleSheet,
@@ -19,6 +20,7 @@ import {
 } from 'react-native';
 import MapView, { Marker, Polyline, Region } from 'react-native-maps';
 import { startSafetyTracking, stopSafetyTracking } from '../../lib/rideSafety';
+import { getOrCreateUserId } from '../../lib/userId';
 
 type Coordinate = {
   latitude: number;
@@ -55,6 +57,7 @@ export default function RideScreen() {
   const activeCode = Array.isArray(activeCodeParam) ? activeCodeParam[0] : activeCodeParam;
   const [location, setLocation] = useState<Region | null>(null);
   const [destination, setDestination] = useState<Coordinate | null>(null);
+  const [rideState, setRideState] = useState<'idle' | 'preview' | 'active'>('idle');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchFeature[]>([]);
   const [routeCoords, setRouteCoords] = useState<Coordinate[]>([]);
@@ -67,6 +70,8 @@ export default function RideScreen() {
   const [isSubmittingFare, setIsSubmittingFare] = useState(false);
   const mapRef = useRef<MapView | null>(null);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const routeRequestId = useRef(0);
+  const friendUpdatesPaused = useRef(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -92,12 +97,12 @@ export default function RideScreen() {
   }, []);
 
   useEffect(() => {
-    if (!destination || distance <= 0) return;
+    if (rideState !== 'active') return;
 
     startSafetyTracking().catch((error) => {
       console.error('Could not start safety tracking', error);
     });
-  }, [destination, distance]);
+  }, [rideState]);
 
   const baseFare = 20;
   const perKmRate = 15;
@@ -114,6 +119,23 @@ export default function RideScreen() {
       await Share.share({ message: `I'm in a rickshaw. My live location: ${mapsLink}` });
     } catch {
       Alert.alert('Error', 'Could not share.');
+    }
+  };
+
+  const openDirections = async () => {
+    if (!destination) {
+      Alert.alert('Directions unavailable', 'Choose a destination first.');
+      return;
+    }
+
+    try {
+      const currentLocation = await Location.getCurrentPositionAsync({});
+      const origin = `${currentLocation.coords.latitude},${currentLocation.coords.longitude}`;
+      const destinationQuery = `${destination.latitude},${destination.longitude}`;
+      const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destinationQuery}&travelmode=driving&dir_action=navigate`;
+      await Linking.openURL(mapsUrl);
+    } catch {
+      Alert.alert('Directions unavailable', 'Could not get your location or open Google Maps.');
     }
   };
 
@@ -137,10 +159,12 @@ export default function RideScreen() {
 
     setIsSubmittingFare(true);
     try {
+      const userId = await getOrCreateUserId();
       const response = await fetch(`${backendUrl}/api/rides/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          userId,
           startLat: location.latitude,
           startLon: location.longitude,
           endLat: destination.latitude,
@@ -158,6 +182,7 @@ export default function RideScreen() {
 
       Alert.alert('Thank You!', 'Your ride feedback was saved.');
       stopSafetyTracking();
+      friendUpdatesPaused.current = true;
       setIsModalVisible(false);
       setShowCustomInput(false);
       setActualFare('');
@@ -166,6 +191,7 @@ export default function RideScreen() {
       setRouteCoords([]);
       setDistance(0);
       setIsSurge(false);
+      setRideState('idle');
     } catch (error) {
       Alert.alert('Could not save ride', error instanceof Error ? error.message : 'Try again when your connection is available.');
     } finally {
@@ -198,13 +224,15 @@ export default function RideScreen() {
 
   const fetchRoute = useCallback(async (destLat: number, destLon: number) => {
     if (!location) return;
+    const requestId = routeRequestId.current + 1;
+    routeRequestId.current = requestId;
     try {
       const response = await fetch(
         `https://router.project-osrm.org/route/v1/bike/${location.longitude},${location.latitude};${destLon},${destLat}?overview=full&geometries=geojson`,
       );
       if (!response.ok) return;
       const data: RouteResponse = await response.json();
-      if (data.routes && data.routes.length > 0) {
+      if (routeRequestId.current === requestId && data.routes && data.routes.length > 0) {
         setDistance(data.routes[0].distance / 1000);
         const points = data.routes[0].geometry.coordinates.map(([longitude, latitude]) => ({
           latitude,
@@ -220,13 +248,23 @@ export default function RideScreen() {
     }
   }, [location]);
 
-  const applyFriendDestination = useEffectEvent((latitude: number, longitude: number, name?: string) => {
+  const applyFriendDestination = useEffectEvent((latitude: number, longitude: number, name?: string, isLiveUpdate = false) => {
+    if (isLiveUpdate && friendUpdatesPaused.current) return;
     if (destination?.latitude === latitude && destination?.longitude === longitude) return;
 
+    if (!isLiveUpdate) friendUpdatesPaused.current = false;
+    const shouldPreview = !isLiveUpdate || rideState !== 'active';
+    if (shouldPreview && rideState === 'active') stopSafetyTracking();
+    if (shouldPreview) routeRequestId.current += 1;
     startTransition(() => {
       setDestination({ latitude, longitude });
       setSearchQuery(name || "Friend's Location");
       setSearchResults([]);
+      if (shouldPreview) {
+        setRideState('preview');
+        setDistance(0);
+        setRouteCoords([]);
+      }
     });
     void fetchRoute(latitude, longitude);
   });
@@ -273,7 +311,7 @@ export default function RideScreen() {
           return;
         }
 
-        applyFriendDestination(meetup.latitude, meetup.longitude);
+        applyFriendDestination(meetup.latitude, meetup.longitude, undefined, true);
       } catch (error) {
         if (isActive) console.error('Could not refresh Meetup Code location', error);
       } finally {
@@ -291,10 +329,28 @@ export default function RideScreen() {
   const handlePlaceSelect = (item: SearchFeature) => {
     Keyboard.dismiss();
     const [longitude, latitude] = item.geometry.coordinates;
+    friendUpdatesPaused.current = true;
+    routeRequestId.current += 1;
+    if (rideState === 'active') stopSafetyTracking();
+    setRideState('preview');
     setDestination({ latitude, longitude });
+    setDistance(0);
+    setRouteCoords([]);
     setSearchQuery(item.properties.name || item.properties.street || 'Selected Location');
     setSearchResults([]);
     fetchRoute(latitude, longitude);
+  };
+
+  const cancelPreview = () => {
+    friendUpdatesPaused.current = true;
+    routeRequestId.current += 1;
+    setDestination(null);
+    setSearchQuery('');
+    setSearchResults([]);
+    setRouteCoords([]);
+    setDistance(0);
+    setIsSurge(false);
+    setRideState('idle');
   };
 
   return (
@@ -324,7 +380,7 @@ export default function RideScreen() {
         )}
       </View>
 
-      {destination && distance > 0 && (
+      {rideState === 'active' && (
         <TouchableOpacity style={styles.sosButton} onPress={triggerSOS}>
           <Ionicons name="warning" size={24} color="white" />
           <Text style={styles.sosText}>SOS</Text>
@@ -345,7 +401,42 @@ export default function RideScreen() {
             {routeCoords.length > 0 && <Polyline coordinates={routeCoords} strokeWidth={4} strokeColor="#2b6cb0" />}
           </MapView>
 
-          {destination && distance > 0 && (
+          {rideState === 'preview' && (
+            <View style={[styles.fareContainer, styles.previewContainer]}>
+              {distance > 0 ? (
+                <View style={styles.previewSummary}>
+                  <Text style={styles.distanceText}>Distance: {distance.toFixed(1)} km</Text>
+                  <View style={styles.previewEstimate}>
+                    <Text style={styles.previewEstimateLabel}>Estimated fare</Text>
+                    <Text style={styles.previewFarePrice}>Tk {fare}</Text>
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.previewLoading}>
+                  <ActivityIndicator size="small" color="#2b6cb0" />
+                  <Text style={styles.distanceText}>Calculating route...</Text>
+                </View>
+              )}
+              <TouchableOpacity style={styles.directionsButton} onPress={() => void openDirections()}>
+                <Ionicons name="navigate-outline" size={18} color="#1d4ed8" />
+                <Text style={styles.directionsButtonText}>Directions</Text>
+              </TouchableOpacity>
+              <View style={styles.actionRow}>
+                <TouchableOpacity style={[styles.button, styles.shareButton]} onPress={cancelPreview}>
+                  <Text style={styles.shareButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.button, styles.confirmButton, distance <= 0 && styles.disabledButton]}
+                  onPress={() => setRideState('active')}
+                  disabled={distance <= 0}
+                >
+                  <Text style={[styles.buttonText, distance <= 0 && styles.disabledButtonText]}>Start Trip</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {rideState === 'active' && (
             <View style={styles.fareContainer}>
               <Text style={styles.distanceText}>Distance: {distance.toFixed(1)} km</Text>
               <View style={styles.surgeContainer}>
@@ -358,6 +449,10 @@ export default function RideScreen() {
                 />
               </View>
               <Text style={styles.farePrice}>Tk {fare}</Text>
+              <TouchableOpacity style={styles.directionsButton} onPress={() => void openDirections()}>
+                <Ionicons name="navigate-outline" size={18} color="#1d4ed8" />
+                <Text style={styles.directionsButtonText}>Directions</Text>
+              </TouchableOpacity>
               <View style={styles.actionRow}>
                 <TouchableOpacity style={[styles.button, styles.shareButton]} onPress={shareLocation}>
                   <Text style={styles.shareButtonText}>Share</Text>
@@ -433,6 +528,16 @@ const styles = StyleSheet.create({
   sosButton: { position: 'absolute', top: 120, right: 20, backgroundColor: '#ef4444', paddingVertical: 12, paddingHorizontal: 15, borderRadius: 30, flexDirection: 'row', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5, elevation: 8, zIndex: 1 },
   sosText: { color: 'white', fontWeight: 'bold', marginLeft: 5, fontSize: 16 },
   fareContainer: { position: 'absolute', bottom: 112, width: '90%', alignSelf: 'center', backgroundColor: 'white', padding: 20, borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 10, elevation: 8, alignItems: 'center' },
+  previewContainer: { padding: 16, borderRadius: 16 },
+  previewSummary: { width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  previewEstimate: { alignItems: 'flex-end' },
+  previewEstimateLabel: { color: '#6b7280', fontSize: 12 },
+  previewFarePrice: { color: '#2b6cb0', fontSize: 22, fontWeight: 'bold' },
+  previewLoading: { width: '100%', flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  directionsButton: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#eff6ff', borderRadius: 10, paddingVertical: 10, marginBottom: 12 },
+  directionsButtonText: { color: '#1d4ed8', fontSize: 15, fontWeight: '600' },
+  disabledButton: { backgroundColor: '#9ca3af' },
+  disabledButtonText: { color: '#f3f4f6' },
   distanceText: { fontSize: 16, color: '#666', marginBottom: 10 },
   surgeContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%', backgroundColor: '#f3f4f6', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 12, marginBottom: 15 },
   surgeText: { fontSize: 15, color: '#374151', fontWeight: '500' },
