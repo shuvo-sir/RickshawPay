@@ -1,13 +1,45 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Tabs, type BottomTabBarProps } from 'expo-router/js-tabs';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Dimensions, Pressable, StyleSheet, View } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
+
+const BAR_WIDTH = Dimensions.get('window').width - 40;
+const BAR_HEIGHT = 55;
+const CORNER_RADIUS = 25;
 
 function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
+  const CX = ((state.index + 0.5) * BAR_WIDTH) / state.routes.length;
+
+  // Y coordinate of the top of the curve 38 and the curve is 38 units high, so the top of the curve is at Y = 0 
+  // X coordinate of the left and right control points of the curve are 25 units away from the center, so the left control point is at X = CX - 25 and the right control point is at X = CX + 25 and the left and right end points of the curve are 50 units away from the center, so the left end point is at X = CX - 50 and the right end point is at X = CX + 50
+  const svgPath = `
+    M ${CORNER_RADIUS} 0
+    L ${CX - 50} 0
+    C ${CX - 25} 0, ${CX - 40} 38, ${CX} 38
+    C ${CX + 40} 38, ${CX + 25} 0, ${CX + 50} 0
+    L ${BAR_WIDTH - CORNER_RADIUS} 0
+    A ${CORNER_RADIUS} ${CORNER_RADIUS} 0 0 1 ${BAR_WIDTH} ${CORNER_RADIUS}
+    L ${BAR_WIDTH} ${BAR_HEIGHT - CORNER_RADIUS}
+    A ${CORNER_RADIUS} ${CORNER_RADIUS} 0 0 1 ${BAR_WIDTH - CORNER_RADIUS} ${BAR_HEIGHT}
+    L ${CORNER_RADIUS} ${BAR_HEIGHT}
+    A ${CORNER_RADIUS} ${CORNER_RADIUS} 0 0 1 0 ${BAR_HEIGHT - CORNER_RADIUS}
+    L 0 ${CORNER_RADIUS}
+    A ${CORNER_RADIUS} ${CORNER_RADIUS} 0 0 1 ${CORNER_RADIUS} 0
+    Z
+  `;
+
   return (
     <View style={styles.tabBar}>
+      <Svg
+        width={BAR_WIDTH}
+        height={BAR_HEIGHT}
+        viewBox={`0 0 ${BAR_WIDTH} ${BAR_HEIGHT}`}
+        style={styles.background}
+      >
+        <Path d={svgPath} fill="white" />
+      </Svg>
       {state.routes.map((route, index) => {
         const { options } = descriptors[route.key];
-        if ('href' in options && options.href === null) return null;
 
         const isFocused = state.index === index;
         const color = isFocused ? '#10b981' : '#b91048';
@@ -91,8 +123,6 @@ export default function TabLayout() {
         name="sos"
         options={{
           title: 'SOS',
-          href: null,
-          tabBarActiveTintColor: '#dc2626',
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? 'warning' : 'warning-outline'} size={24} color={color} />
           ),
@@ -107,19 +137,21 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 20,
     left: 20,
-    right: 20,
-    height: 65,
-    backgroundColor: 'white',
+    width: BAR_WIDTH,
+    height: BAR_HEIGHT,
     borderRadius: 25,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 15,
-    shadowColor: '#000',
+    shadowColor: '#ff0000',
     shadowOffset: { width: 0, height: 5 },
     shadowOpacity: 0.1,
     shadowRadius: 10,
     elevation: 10,
+  },
+  background: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
   },
   tabButton: {
     flex: 1,
@@ -127,9 +159,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   activeIconContainer: {
-    top: -29,
-    width: 60,
-    height: 60,
+    top: -24,
+    width: 50,
+    height: 50,
     borderRadius: 35,
     backgroundColor: 'white',
     justifyContent: 'center',

@@ -16,9 +16,6 @@ export default function ProfileScreen() {
       <TouchableOpacity style={styles.secondaryButton} onPress={() => router.push('/meetup')}>
         <Text style={styles.secondaryButtonText}>Open Meetup</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={styles.secondaryButton} onPress={() => router.push('/location')}>
-        <Text style={styles.secondaryButtonText}>Open Safety Location</Text>
-      </TouchableOpacity>
     </View>
   );
 }
