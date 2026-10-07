@@ -5,18 +5,24 @@ import Svg, { Path } from 'react-native-svg';
 
 const BAR_WIDTH = Dimensions.get('window').width - 40;
 const BAR_HEIGHT = 55;
-const CORNER_RADIUS = 25;
+const CORNER_RADIUS = 15;
 
 function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
-  const CX = ((state.index + 0.5) * BAR_WIDTH) / state.routes.length;
+  // Define your padding so the math knows about it
+  const PADDING = 30; 
 
+  // Subtract the left & right padding from the total width to get the inner space
+  const INNER_WIDTH = BAR_WIDTH - (PADDING * 2); 
+
+  // Calculate the center using the inner space, then ADD the left padding to push it over!
+  const CX = PADDING + (((state.index + 0.5) * INNER_WIDTH) / state.routes.length);
   // Y coordinate of the top of the curve 38 and the curve is 38 units high, so the top of the curve is at Y = 0 
   // X coordinate of the left and right control points of the curve are 25 units away from the center, so the left control point is at X = CX - 25 and the right control point is at X = CX + 25 and the left and right end points of the curve are 50 units away from the center, so the left end point is at X = CX - 50 and the right end point is at X = CX + 50
   const svgPath = `
     M ${CORNER_RADIUS} 0
-    L ${CX - 50} 0
-    C ${CX - 25} 0, ${CX - 40} 38, ${CX} 38
-    C ${CX + 40} 38, ${CX + 25} 0, ${CX + 50} 0
+    L ${CX - 39} 0
+    C ${CX - 25} 0, ${CX - 30} 32, ${CX} 32
+    C ${CX + 30} 32, ${CX + 25} 0, ${CX + 39} 0
     L ${BAR_WIDTH - CORNER_RADIUS} 0
     A ${CORNER_RADIUS} ${CORNER_RADIUS} 0 0 1 ${BAR_WIDTH} ${CORNER_RADIUS}
     L ${BAR_WIDTH} ${BAR_HEIGHT - CORNER_RADIUS}
@@ -42,7 +48,7 @@ function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
         const { options } = descriptors[route.key];
 
         const isFocused = state.index === index;
-        const color = isFocused ? '#10b981' : '#b91048';
+        const color = isFocused ? '#b91048' : '#10b981'; 
         const icon = options.tabBarIcon?.({ focused: isFocused, color, size: 24 });
 
         return (
@@ -142,7 +148,8 @@ const styles = StyleSheet.create({
     borderRadius: 25,
     flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#ff0000',
+    paddingHorizontal: 30,
+    shadowColor: '#b91048',
     shadowOffset: { width: 0, height: 5 },
     shadowOpacity: 0.1,
     shadowRadius: 10,
@@ -168,7 +175,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 6,
     borderColor: '#f9fafb',
-    shadowColor: '#000',
+    shadowColor: '#b91048',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.16,
     shadowRadius: 8,
