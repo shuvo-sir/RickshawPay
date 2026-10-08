@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useEffectEvent, useState } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
-import { getOrCreateUserId } from '../../lib/userId';
+import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { getAuthCredentials } from '../../lib/userId';
 
 type Ride = {
   _id?: string;
@@ -35,6 +35,7 @@ export default function HistoryScreen() {
   const [rides, setRides] = useState<Ride[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [deletingRideId, setDeletingRideId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadHistory = useCallback(async (refresh = false) => {
@@ -50,8 +51,10 @@ export default function HistoryScreen() {
     else setIsLoading(true);
     setErrorMessage(null);
     try {
-      const userId = await getOrCreateUserId();
-      const response = await fetch(`${backendUrl}/api/rides/history?userId=${encodeURIComponent(userId)}`);
+      const credentials = await getAuthCredentials(backendUrl);
+      const response = await fetch(`${backendUrl}/api/rides/history`, {
+        headers: { Authorization: `Bearer ${credentials.token}` },
+      });
       const data: HistoryResponse = await response.json();
       if (!response.ok || data.success !== true || !Array.isArray(data.rides)) {
         throw new Error(typeof data.message === 'string' ? data.message : 'Could not load ride history.');
@@ -63,6 +66,53 @@ export default function HistoryScreen() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
+  }, []);
+
+  const deleteRide = useCallback((ride: Ride) => {
+    const rideId = ride._id ?? ride.id;
+    if (!rideId) {
+      Alert.alert('Unable to delete ride', 'This history entry has no valid ride ID.');
+      return;
+    }
+
+    Alert.alert(
+      'Delete ride?',
+      'This ride will be permanently removed from your history.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/$/, '');
+              if (!backendUrl) {
+                Alert.alert('Backend unavailable', 'Set EXPO_PUBLIC_BACKEND_URL to delete this ride.');
+                return;
+              }
+
+              setDeletingRideId(rideId);
+              try {
+                const credentials = await getAuthCredentials(backendUrl);
+                const response = await fetch(`${backendUrl}/api/rides/${encodeURIComponent(rideId)}`, {
+                  method: 'DELETE',
+                  headers: { Authorization: `Bearer ${credentials.token}` },
+                });
+                const data: HistoryResponse = await response.json();
+                if (!response.ok || data.success !== true) {
+                  throw new Error(typeof data.message === 'string' ? data.message : 'Could not delete this ride.');
+                }
+                setRides((current) => current.filter((item) => (item._id ?? item.id) !== rideId));
+              } catch (error) {
+                Alert.alert('Could not delete ride', error instanceof Error ? error.message : 'Try again when your connection is available.');
+              } finally {
+                setDeletingRideId(null);
+              }
+            })();
+          },
+        },
+      ],
+    );
   }, []);
 
   const loadHistoryOnMount = useEffectEvent(() => {
@@ -101,6 +151,12 @@ export default function HistoryScreen() {
           <Text style={styles.description}>Your completed rickshaw fares will appear here.</Text>
         </View>
       }
+      ListHeaderComponent={
+        <View style={styles.header}>
+          <Text style={styles.pageTitle}>Ride History</Text>
+          <Text style={styles.pageSubtitle}>Review and manage your completed rickshaw fares.</Text>
+        </View>
+      }
       renderItem={({ item }) => {
         const date = new Date(item.date);
         const isOverEstimate = item.actualFarePaid > item.estimatedFare;
@@ -108,9 +164,22 @@ export default function HistoryScreen() {
           <View style={styles.rideCard}>
             <View style={styles.cardHeader}>
               <Text style={styles.date}>{Number.isNaN(date.getTime()) ? 'Unknown date' : date.toLocaleDateString()}</Text>
-              <Text style={[styles.difference, isOverEstimate ? styles.over : styles.under]}>
-                {isOverEstimate ? '+' : '-'}Tk {Math.abs(item.actualFarePaid - item.estimatedFare).toFixed(0)}
-              </Text>
+              <View style={styles.cardActions}>
+                <Text style={[styles.difference, isOverEstimate ? styles.over : styles.under]}>
+                  {isOverEstimate ? '+' : '-'}Tk {Math.abs(item.actualFarePaid - item.estimatedFare).toFixed(0)}
+                </Text>
+                <TouchableOpacity
+                  accessibilityLabel="Delete ride"
+                  accessibilityRole="button"
+                  disabled={deletingRideId === (item._id ?? item.id)}
+                  onPress={() => deleteRide(item)}
+                  style={styles.deleteButton}
+                >
+                  {deletingRideId === (item._id ?? item.id)
+                    ? <ActivityIndicator size="small" color="#dc2626" />
+                    : <Ionicons name="trash-outline" size={21} color="#dc2626" />}
+                </TouchableOpacity>
+              </View>
             </View>
             <Text style={styles.distance}>{item.distanceKm.toFixed(1)} km ride</Text>
             <View style={styles.fareRow}>
@@ -142,6 +211,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#f9fafb',
     padding: 20,
   },
+  header: {
+    marginBottom: 18,
+  },
+  pageTitle: {
+    color: '#1f2937',
+    fontSize: 30,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  pageSubtitle: {
+    color: '#6b7280',
+    fontSize: 15,
+    lineHeight: 22,
+  },
   title: {
     marginTop: 15,
     marginBottom: 10,
@@ -165,6 +248,8 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  cardActions: { alignItems: 'center', flexDirection: 'row', gap: 10 },
+  deleteButton: { alignItems: 'center', justifyContent: 'center', minHeight: 36, minWidth: 36 },
   date: { color: '#64748b', fontSize: 13 },
   difference: { fontSize: 14, fontWeight: '700' },
   over: { color: '#dc2626' },

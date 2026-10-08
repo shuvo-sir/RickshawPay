@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import MapView, { Marker, Polyline, Region } from 'react-native-maps';
 import { startSafetyTracking, stopSafetyTracking } from '../../lib/rideSafety';
-import { getOrCreateUserId } from '../../lib/userId';
+import { getAuthCredentials } from '../../lib/userId';
 
 type Coordinate = {
   latitude: number;
@@ -159,12 +159,14 @@ export default function RideScreen() {
 
     setIsSubmittingFare(true);
     try {
-      const userId = await getOrCreateUserId();
+      const credentials = await getAuthCredentials(backendUrl);
       const response = await fetch(`${backendUrl}/api/rides/complete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${credentials.token}`,
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          userId,
           startLat: location.latitude,
           startLon: location.longitude,
           endLat: destination.latitude,
@@ -291,7 +293,10 @@ export default function RideScreen() {
       if (isPolling) return;
       isPolling = true;
       try {
-        const response = await fetch(`${backendUrl}/api/meetup/${encodeURIComponent(activeCode)}`);
+        const credentials = await getAuthCredentials(backendUrl);
+        const response = await fetch(`${backendUrl}/api/meetup/${encodeURIComponent(activeCode)}`, {
+          headers: { Authorization: `Bearer ${credentials.token}` },
+        });
         if (!response.ok) return;
 
         const data: unknown = await response.json();

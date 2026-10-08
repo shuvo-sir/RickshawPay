@@ -1,3 +1,5 @@
+import * as Clipboard from 'expo-clipboard';
+import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
@@ -11,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { getAuthCredentials } from '../../lib/userId';
 
 async function parseBackendResponse(response: Response): Promise<unknown> {
   const contentType = response.headers.get('content-type') || 'unknown content type';
@@ -31,6 +34,7 @@ async function parseBackendResponse(response: Response): Promise<unknown> {
 export default function MeetupScreen() {
   const router = useRouter();
   const [meetupCode, setMeetupCode] = useState<string | null>(null);
+  const [ownerToken, setOwnerToken] = useState<string | null>(null);
   const [isSharing, setIsSharing] = useState(false);
   const [friendCode, setFriendCode] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -47,12 +51,17 @@ export default function MeetupScreen() {
       if (isUpdating) return;
       isUpdating = true;
       try {
+        const credentials = await getAuthCredentials(backendUrl);
         const currentLocation = await Location.getCurrentPositionAsync({});
         if (!isActive) return;
 
         const response = await fetch(`${backendUrl}/api/meetup/update`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            Authorization: `Bearer ${credentials.token}`,
+            'Content-Type': 'application/json',
+            'x-meetup-owner-token': ownerToken ?? '',
+          },
           body: JSON.stringify({
             code: meetupCode,
             latitude: currentLocation.coords.latitude,
@@ -74,7 +83,7 @@ export default function MeetupScreen() {
       isActive = false;
       clearInterval(interval);
     };
-  }, [meetupCode, isSharing]);
+  }, [meetupCode, isSharing, ownerToken]);
 
   const generateMeetupCode = async () => {
     const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/$/, '');
@@ -92,20 +101,25 @@ export default function MeetupScreen() {
       }
 
       const currentLocation = await Location.getCurrentPositionAsync({});
+      const credentials = await getAuthCredentials(backendUrl);
       const response = await fetch(`${backendUrl}/api/meetup/create`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${credentials.token}`,
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           latitude: currentLocation.coords.latitude,
           longitude: currentLocation.coords.longitude,
         }),
       });
       const data = await parseBackendResponse(response);
-      const result = data as { success?: unknown; code?: unknown; message?: unknown };
-      if (!response.ok || result.success !== true || typeof result.code !== 'string') {
+      const result = data as { success?: unknown; code?: unknown; ownerToken?: unknown; message?: unknown };
+      if (!response.ok || result.success !== true || typeof result.code !== 'string' || typeof result.ownerToken !== 'string') {
         throw new Error(typeof result.message === 'string' ? result.message : 'Could not generate a meetup code.');
       }
       setMeetupCode(result.code);
+      setOwnerToken(result.ownerToken);
       setIsSharing(true);
     } catch (error) {
       Alert.alert('Could not generate code', error instanceof Error ? error.message : 'Try again when your connection is available.');
@@ -126,8 +140,13 @@ export default function MeetupScreen() {
 
     setIsStopping(true);
     try {
+      const credentials = await getAuthCredentials(backendUrl);
       const response = await fetch(`${backendUrl}/api/meetup/${encodeURIComponent(meetupCode)}`, {
         method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${credentials.token}`,
+          'x-meetup-owner-token': ownerToken ?? '',
+        },
       });
       const data = await parseBackendResponse(response);
       const result = data as { success?: unknown; message?: unknown };
@@ -136,6 +155,7 @@ export default function MeetupScreen() {
       }
 
       setMeetupCode(null);
+      setOwnerToken(null);
       Alert.alert('Sharing stopped', 'Your Meetup Code was removed.');
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Try again when your connection is available.';
@@ -145,10 +165,22 @@ export default function MeetupScreen() {
     }
   };
 
+  const copyMeetupCode = async () => {
+    if (!meetupCode) return;
+
+    try {
+      await Clipboard.setStringAsync(meetupCode);
+      Alert.alert('Code copied', 'Your Meetup Code is ready to share.');
+    } catch (error) {
+      console.error('Could not copy Meetup Code', error);
+      Alert.alert('Copy unavailable', 'Could not copy the Meetup Code. Please select it manually.');
+    }
+  };
+
   const findFriend = async () => {
     const code = friendCode.trim();
-    if (!/^\d{4}$/.test(code)) {
-      Alert.alert('Invalid code', 'Enter the 4-digit friend code.');
+    if (!/^[a-f0-9]{32}$/.test(code)) {
+      Alert.alert('Invalid code', 'Enter the 32-character friend code.');
       return;
     }
 
@@ -160,7 +192,10 @@ export default function MeetupScreen() {
 
     setIsFindingFriend(true);
     try {
-      const response = await fetch(`${backendUrl}/api/meetup/${encodeURIComponent(code)}`);
+      const credentials = await getAuthCredentials(backendUrl);
+      const response = await fetch(`${backendUrl}/api/meetup/${encodeURIComponent(code)}`, {
+        headers: { Authorization: `Bearer ${credentials.token}` },
+      });
       const data: unknown = await response.json();
       const meetup = data as {
         success?: unknown;
@@ -210,7 +245,17 @@ export default function MeetupScreen() {
         <Text style={styles.sectionDescription}>Your code stays active until you stop sharing or it expires.</Text>
         {meetupCode ? (
           <>
-            <Text style={styles.meetupCode}>{meetupCode}</Text>
+            <View style={styles.codeRow}>
+              <Text style={styles.meetupCode}>{meetupCode}</Text>
+              <TouchableOpacity
+                accessibilityLabel="Copy Meetup Code"
+                accessibilityRole="button"
+                style={styles.copyButton}
+                onPress={() => void copyMeetupCode()}
+              >
+                <Ionicons name="copy-outline" size={24} color="#16a34a" />
+              </TouchableOpacity>
+            </View>
             <Text style={styles.sharingStatus}>{isSharing ? 'Live location sharing is active' : 'Live location sharing is stopped'}</Text>
             <TouchableOpacity style={styles.stopButton} onPress={() => void stopMeetupSharing()} disabled={isStopping}>
               {isStopping ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{isSharing ? 'Stop Sharing' : 'Delete Code'}</Text>}
@@ -228,9 +273,9 @@ export default function MeetupScreen() {
         <View style={styles.friendRow}>
           <TextInput
             style={styles.friendCodeInput}
-            placeholder="4-digit code"
-            keyboardType="number-pad"
-            maxLength={4}
+            placeholder="32-character code"
+            autoCapitalize="none"
+            maxLength={32}
             value={friendCode}
             onChangeText={setFriendCode}
           />
@@ -254,7 +299,9 @@ const styles = StyleSheet.create({
   section: { backgroundColor: '#fff', borderRadius: 12, marginTop: 24, padding: 18, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 8, elevation: 3 },
   sectionTitle: { color: '#1f2937', fontSize: 18, fontWeight: '700' },
   sectionDescription: { color: '#6b7280', fontSize: 14, lineHeight: 20, marginTop: 6 },
-  meetupCode: { color: '#16a34a', fontSize: 34, fontWeight: '800', marginVertical: 18, textAlign: 'center' },
+  codeRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'center', marginVertical: 18 },
+  meetupCode: { color: '#16a34a', flexShrink: 1, fontSize: 28, fontWeight: '800', textAlign: 'center' },
+  copyButton: { alignItems: 'center', justifyContent: 'center', marginLeft: 10, minHeight: 44, minWidth: 44 },
   sharingStatus: { color: '#6b7280', fontSize: 14, textAlign: 'center' },
   generateButton: { alignItems: 'center', backgroundColor: '#16a34a', borderRadius: 10, marginTop: 16, minHeight: 48, justifyContent: 'center', paddingHorizontal: 16 },
   stopButton: { alignItems: 'center', backgroundColor: '#dc2626', borderRadius: 10, marginTop: 8, minHeight: 48, justifyContent: 'center', paddingHorizontal: 16 },

@@ -1,12 +1,60 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const USER_ID_KEY = '@device_user_id';
+const AUTH_STORAGE_KEY = '@installation_auth';
 
-export async function getOrCreateUserId(): Promise<string> {
-  const storedUserId = await AsyncStorage.getItem(USER_ID_KEY);
-  if (storedUserId) return storedUserId;
+export type AuthCredentials = {
+  userId: string;
+  token: string;
+};
 
-  const userId = `user_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  await AsyncStorage.setItem(USER_ID_KEY, userId);
-  return userId;
+type RegistrationResponse = {
+  success?: unknown;
+  userId?: unknown;
+  token?: unknown;
+};
+
+let registrationPromise: Promise<AuthCredentials> | null = null;
+
+export async function getAuthCredentials(backendUrl: string): Promise<AuthCredentials> {
+  const stored = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
+  if (stored) {
+    try {
+      const parsed: unknown = JSON.parse(stored);
+      if (
+        parsed
+        && typeof parsed === 'object'
+        && typeof (parsed as AuthCredentials).userId === 'string'
+        && typeof (parsed as AuthCredentials).token === 'string'
+      ) {
+        return parsed as AuthCredentials;
+      }
+    } catch {
+      await AsyncStorage.removeItem(AUTH_STORAGE_KEY);
+    }
+  }
+
+  if (!registrationPromise) {
+    registrationPromise = (async () => {
+      const response = await fetch(`${backendUrl}/api/auth/register`, { method: 'POST' });
+      const data: RegistrationResponse = await response.json();
+      if (
+        !response.ok
+        || data.success !== true
+        || typeof data.userId !== 'string'
+        || typeof data.token !== 'string'
+      ) {
+        throw new Error('Could not register this device with the backend.');
+      }
+
+      const credentials = { userId: data.userId, token: data.token };
+      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(credentials));
+      return credentials;
+    })();
+  }
+
+  try {
+    return await registrationPromise;
+  } finally {
+    registrationPromise = null;
+  }
 }
