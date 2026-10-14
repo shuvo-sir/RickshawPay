@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const app = require('./app');
 const { connectDatabase } = require('./config/database');
+const { startKeepAlive } = require('./utils/keepAlive');
 
 async function startServer() {
   try {
@@ -10,6 +11,7 @@ async function startServer() {
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`🚀 Backend running on port ${PORT}`);
+      startKeepAlive();
     });
   } catch (error) {
     console.error('❌ Backend startup failed: MongoDB connection is required.', error.message);

@@ -400,7 +400,7 @@ export default function RideScreen() {
         </View>
       ) : (
         <>
-          <MapView ref={mapRef} style={styles.map} initialRegion={location} showsUserLocation>
+          <MapView ref={mapRef} style={styles.map} region={location} showsUserLocation>
             <Marker coordinate={location} title="Pickup" />
             {destination && <Marker coordinate={destination} pinColor="green" title="Dropoff" />}
             {routeCoords.length > 0 && <Polyline coordinates={routeCoords} strokeWidth={4} strokeColor="#2b6cb0" />}
